@@ -1,6 +1,6 @@
 Multiscale Entropic Network Generator 2 (MUSKETEER2)
 
-Copyright (c) 2011-2015 by Alexander Gutfraind and Ilya Safro. 
+Copyright (c) 2011-2012 by Authors. 
 All rights reserved.
 
 Use and redistribution of this file is governed by the license terms in
@@ -203,4 +203,3 @@ Error writing DOT file or pygraphviz error:
 * pygraphviz is not currently functional in the Windows platform
 * specify an alternative output file such as "-o my_output.elist"
 * or, try install/ing pydot package
-

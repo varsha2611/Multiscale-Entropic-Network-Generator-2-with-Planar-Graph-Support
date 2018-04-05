@@ -2,13 +2,13 @@
 '''
 Multiscale Entropic Network Generator 2 (MUSKETEER2)
 
-Copyright (c) 2011-2015 by Alexander Gutfraind and Ilya Safro. 
+Copyright (c) 2011-2015 by Alexander Gutfraind and Ilya Safro.
 All rights reserved.
 
 Use and redistribution of this file is governed by the license terms in
 the LICENSE file found in the project's top-level directory.
 
-Experimental Algorithms 
+Experimental Algorithms
 
 '''
 
@@ -19,11 +19,15 @@ import numpy.random as npr
 import random, sys
 import networkx as nx
 import pdb
-import cPickle
+import pickle
 import gc
 import simpletesters
 import graphutils
 import alternatives #module might be refered in params['algorithm']
+import collections
+from networkx.drawing.nx_agraph import graphviz_layout
+import matplotlib.pyplot as plt
+import planarity
 
 np.seterr(all='raise')
 
@@ -49,9 +53,9 @@ def chart_paths(G, source, new_edge_horizon, search_method='particles', params=N
     if search_method == 'particles':  #random walk from a neighbor to find any OTHER nbr
         source_nbs = G_neighborsSet(source)
         num_misses = 0
-        for cur_loc in [random_one(source_nbs) for i in xrange(num_trial_particles)]:
+        for cur_loc in [random_one(source_nbs) for i in range(num_trial_particles)]:
             blocked = set([source, cur_loc])
-            for d in xrange(2, new_edge_horizon+1):
+            for d in range(2, new_edge_horizon+1):
                 cur_loc = find_next(G=G, start_node=cur_loc, weighted_step=weighted_step, blocked=blocked, rds=rds, sm=sm)
                 if cur_loc == None:  #stuck in a self-made corner
                     # num_misses += 1
@@ -69,16 +73,16 @@ def chart_paths(G, source, new_edge_horizon, search_method='particles', params=N
                     #print 'escaped'
                     break
         if sum(estimate_of_paths) > 0:
-            estimate_of_paths /= sum(estimate_of_paths) 
+            estimate_of_paths /= sum(estimate_of_paths)
         num_missed_neighbors = None #not applicable
     elif search_method == 'particles_shortest':  #random walk estimates the shortest alternative path to a neighbor
         source_nbs = G_neighborsSet(source)
-        nb_steps = dict.fromkeys(G_adj[source].keys(), np.inf)
+        nb_steps = dict.fromkeys(list(G_adj[source].keys()), np.inf)
         num_misses = 0
         #wishlist: the distance depends on the starting nb.  we need to be consistent and use the same starting nb
-        for cur_loc in [random_one(source_nbs) for i in xrange(num_trial_particles)]:
+        for cur_loc in [random_one(source_nbs) for i in range(num_trial_particles)]:
             blocked = set([source, cur_loc])
-            for d in xrange(2, new_edge_horizon+1):
+            for d in range(2, new_edge_horizon+1):
                 cur_loc = find_next(G=G, start_node=cur_loc, weighted_step=weighted_step, blocked=blocked, rds=rds, sm=sm)
                 if cur_loc == None:  #stuck in a self-made corner
                     #num_misses += 1
@@ -99,13 +103,13 @@ def chart_paths(G, source, new_edge_horizon, search_method='particles', params=N
             if d < np.inf:
                 estimate_of_paths[d] += 1
         if sum(estimate_of_paths) > 0:
-            estimate_of_paths /= sum(estimate_of_paths) 
+            estimate_of_paths /= sum(estimate_of_paths)
         num_missed_neighbors = None #not applicable
     elif search_method == 'particles3':     #routes, determines how many neighbors were never reached
-        source_nbs = dict.fromkeys(G_adj[source].keys(), False) #which neighbors were reached
-        for cur_loc in [random_one(source_nbs) for i in xrange(num_trial_particles)]:
+        source_nbs = dict.fromkeys(list(G_adj[source].keys()), False) #which neighbors were reached
+        for cur_loc in [random_one(source_nbs) for i in range(num_trial_particles)]:
             blocked = set([source, cur_loc])
-            for d in xrange(2, new_edge_horizon+1):
+            for d in range(2, new_edge_horizon+1):
                 cur_loc = find_next(G=G, start_node=cur_loc, weighted_step=weighted_step, blocked=blocked, rds=rds, sm=sm)
                 if cur_loc == None:  #stuck in a self-made corner
                     break
@@ -117,19 +121,19 @@ def chart_paths(G, source, new_edge_horizon, search_method='particles', params=N
                 #wishlist: maybe break if find all the neighbors
         num_missed_neighbors = sum(1 for nb in source_nbs if not source_nbs[nb])
         if sum(estimate_of_paths) > 0:
-            estimate_of_paths = (source_nbs.__len__() - num_missed_neighbors) * estimate_of_paths / sum(estimate_of_paths) 
+            estimate_of_paths = (source_nbs.__len__() - num_missed_neighbors) * estimate_of_paths / sum(estimate_of_paths)
         num_misses = None #N/A
     else:
-        raise ValueError, 'Unknown search method'
-    
+        raise ValueError('Unknown search method')
+
     #return estimate_of_paths, num_misses
-    #WARNING: many of our results were based on setting this to 0.  
+    #WARNING: many of our results were based on setting this to 0.
     #we do not correctly estimate the number of misses ...
 
     #print estimate_of_paths, num_misses
     #pdb.set_trace()
     #return estimate_of_paths, 0
-     
+
     return {'estimate_of_paths':estimate_of_paths,
             'num_missed_neighbors':num_missed_neighbors,
             'num_attempts':num_trial_particles,
@@ -138,8 +142,8 @@ def chart_paths(G, source, new_edge_horizon, search_method='particles', params=N
 
 
 def check_and_fix_connectivity(G, params):
-    new_edges = set() 
-    ccs = nx.connected_components(G) 
+    new_edges = set()
+    ccs = list(nx.connected_components(G)) 
     if len(ccs) > 1:
         giant_comp = ccs[0]
         for cc in ccs[1:]:
@@ -148,13 +152,38 @@ def check_and_fix_connectivity(G, params):
             new_edges.add((u,w))
     return new_edges
 
+
+def check_and_fix_connectivity_planar(G, params):
+    new_edges = set()
+    ccs = list(nx.connected_components(G))
+    if len(ccs) > 1:
+        giant_comp = ccs[0]
+        added_edges = 0
+        failed_attempts = 0
+        while added_edges < len(ccs[1:]):
+            for cc in ccs[1:]:
+                u,w = random.choice(giant_comp), random.choice(cc)
+                if G.has_edge(u,w):
+                    failed_attempts+=1
+                    continue
+                G.add_edge(u,w)
+                if planarity.is_planar(G.edges()):
+                    new_edges.add((u,w))
+                    added_edges += 1
+                else:
+                    G.remove_edge(u,w)
+                    failed_attempts += 1
+            if failed_attempts > 30:
+                break
+    return new_edges
+
 def clean_c_data(G, c_data):
-#this method serves no function other than trapping bugs: it removes data which should not be used in uncoarsening 
+#this method serves no function other than trapping bugs: it removes data which should not be used in uncoarsening
     aggregates    = c_data['aggregates']
     trapped_edges = c_data['trapped_edges']
     home_nodes    = c_data['home_nodes']
     merged_edges  = c_data['merged_edges']
-    
+
     deleted_seeds   = [node for node in aggregates   if not G.has_node(node)]
     deleted_c_edges = [edge for edge in merged_edges if not G.has_edge(*edge)]
 
@@ -172,12 +201,12 @@ def compute_topology_data(G, level, params):
 #measures statistics of the topology of graph G
 #wishlist: for generation of multiple replicas, it would be helpful to do this computation once for the speedup
     if params.get('verbose', True):
-        sys.stdout.write('Topology estimation ... ') 
+        sys.stdout.write('Topology estimation ... ')
         sys.stdout.flush()
     tpl_data = {}
 
     tpl_data['enforce_connected'] = nx.is_connected(G)
-    
+
     #estimates the probability of friending a node at distance d
     new_edge_horizon     = params.get('new_edge_horizon', estimate_horizon(G))  #no edges added to nodes beyond the horizon
     num_pairs_to_sample  = params.get('num_pairs_to_sample', 100)  #revise comment #no edges added to nodes beyond the horizon
@@ -216,7 +245,7 @@ def compute_topology_data(G, level, params):
     except:
         locality_bias_correction = 0.
     #locality_bias_correction = 0
-    
+
     if locality_bias_correction > 0: #shift weight downward b/c this estimator under-rates correlations between neighbors
         overall_estimates[-1]          += locality_bias_correction     * num_nodes_beyond_the_horizon
         num_nodes_beyond_the_horizon   *= (1-locality_bias_correction)
@@ -241,7 +270,7 @@ def compute_topology_data(G, level, params):
             chance_edge_prob  = 0.
         locality_acceptor = overall_estimates/norm
     else: #fallback
-        locality_acceptor = [0., 0.] + [0.5/(2**d) for d in xrange(1, min(new_edge_horizon,G.number_of_nodes()-2))] 
+        locality_acceptor = [0., 0.] + [0.5/(2**d) for d in range(1, min(new_edge_horizon,G.number_of_nodes()-2))]
         chance_edge_prob  = 0.
         if G.number_of_edges() > 10 and nx.density(G) > 0.2:
             print_warning(params, 'Warning: unable to estimate edge locality.')
@@ -252,12 +281,12 @@ def compute_topology_data(G, level, params):
         print_warning(params, 'Warning: extreme locality at distance 2.  Might make it difficult to insert edges')
 
     tpl_data['locality_acceptor'] = locality_acceptor
-    tpl_data['chance_edge_prob']  = chance_edge_prob 
+    tpl_data['chance_edge_prob']  = chance_edge_prob
 
     #print tpl_data
 
     if params.get('verbose', True):
-        sys.stdout.write('Done topology.'+os.linesep) 
+        sys.stdout.write('Done topology.'+os.linesep)
 
     return tpl_data
 
@@ -271,7 +300,7 @@ def do_coarsen(G, params):
     algorithm_for_coarsening      = params.get('algorithm_for_coarsening', seed_finder_matching) #alt: seed_finder_weight_alg
     seeds, home_nodes, aggregates = algorithm_for_coarsening(G, params)
     if params.get('verbose', True):
-        print 'nn: %d ne: %d (seeds: %d)'%(G.number_of_nodes(),G.number_of_edges(),len(seeds))
+        print('nn: %d ne: %d (seeds: %d)'%(G.number_of_nodes(),G.number_of_edges(),len(seeds)))
 
     free_edges = set()        #edges not within any coarse node.  they will be retained in the coarse graph (many-to-one mapping)
     for seed in seeds:
@@ -284,7 +313,7 @@ def do_coarsen(G, params):
             for nbnb in G.neighbors(nb):
                 if nbnb in aggregates[seed] or (nbnb,nb) in free_edges:
                     continue
-                free_edges.add((nb,nbnb))  
+                free_edges.add((nb,nbnb))
 
     for u,v in free_edges:
         s1 = home_nodes[u]
@@ -307,15 +336,15 @@ def do_coarsen(G, params):
         assert u in home_nodes
         assert home_nodes[u] in seeds
     for (u,v) in G.edges():
-        hu = home_nodes[u] 
+        hu = home_nodes[u]
         hv = home_nodes[v]
         if hu == hv:
             assert not G_coarse.has_edge(hu,hv)
             assert (u,v) in trapped_edges[hu] or (v,u) in trapped_edges[hv]
         else:
             assert G_coarse.has_edge(hu,hv)
-            assert (hu,hv) in merged_edges or (hv,hu) in merged_edges 
-    
+            assert (hu,hv) in merged_edges or (hv,hu) in merged_edges
+
     c_data = {'aggregates':aggregates, 'trapped_edges':trapped_edges, 'home_nodes':home_nodes, 'merged_edges':merged_edges}
     if 'do_coarsen_tester' in params:
         params['do_coarsen_tester'](G, G_coarse, c_data)
@@ -324,7 +353,7 @@ def do_coarsen(G, params):
 
 
 def do_uncoarsen(G_coarse, c_data, params):
-    if callable(params.get('algorithm_for_uncoarsening', False)):
+    if isinstance(params.get('algorithm_for_uncoarsening', False), collections.Callable):
         return params['algorithm_for_uncoarsening'](G_coarse, c_data, params)
 
     aggregates    = c_data['aggregates']
@@ -340,13 +369,13 @@ def do_uncoarsen(G_coarse, c_data, params):
             if u in G_fine and v in G_fine:
                 G_fine.add_edge(u,v)
             #u or v must have been deleted
-            
+
     for s1,s2 in G_coarse.edges_iter():
         if (s1,s2) in merged_edges:
             s1s2 = merged_edges[(s1,s2)]
         else:
             s1s2 = merged_edges[(s2,s1)]
-            
+
         for u,v in s1s2:
             assert u in G_fine
             assert v in G_fine
@@ -374,10 +403,10 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
         print_warning(params, 'Bad or truncated edge growth rate information!  Defaulting to 0')
         growth_rate = 0.
     if verbose:
-        print '  Edge rates: edit %f, growth %f'%(edit_rate,growth_rate)
+        print('  Edge rates: edit %f, growth %f'%(edit_rate,growth_rate))
     if G.number_of_nodes() == 0:
         if verbose:
-            print 'Num nodes = 0 ... editing canceled'
+            print('Num nodes = 0 ... editing canceled')
         return G
 
     new_edge_horizon   = params.get('new_edge_horizon', estimate_horizon(G))  #no edges added to nodes beyond the horizon
@@ -385,14 +414,14 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
         print_warning(params, 'Warning: using a large horizon (%d) on a large graph might use a lot of time'%new_edge_horizon)
 
     if 'enforce_connected' in params:
-        enforce_connected = params['enforce_connected'] 
+        enforce_connected = params['enforce_connected']
     else:
         enforce_connected = tpl_data['enforce_connected']
     dont_cutoff_leafs = params.get('dont_cutoff_leafs', False)
     #do we allow leafs to be cut off completely?
     #   this option should be used sparingly, as it disrupts deferential detachment and decreases clustering
 
-    all_nodes = G.nodes() 
+    all_nodes = G.nodes()
     added_edges_set = set()
     deled_edges_set = set()
     target_edges_to_delete = npr.binomial(max(G.number_of_edges(), 1), edit_rate)
@@ -403,20 +432,20 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
         target_edges_to_delete += int(round(G.number_of_edges() * (-growth_rate)))
 
     deprived_nodes = [] #list of nodes that lost edges, including repetitions
-    deferential_detachment_factor = params.get('deferential_detachment_factor', 0.0)  
-    avg_degree = np.average(nx.degree(G).values())  #inexact deferential detachment, but with a much higher sampling efficiency
+    deferential_detachment_factor = params.get('deferential_detachment_factor', 0.0)
+    avg_degree = np.average(list(nx.degree(G).values()))  #inexact deferential detachment, but with a much higher sampling efficiency
     num_deletion_trials           = params.get('num_deletion_trials', int(round(avg_degree**2)) )
 
     G_adj = G.adj
     G_degree    = lambda u: G_adj[u].__len__()
-    G_neighbors = lambda u: G_adj[u].keys()
-    for trial_num in xrange(max(20, num_deletion_trials*target_edges_to_delete)):
+    G_neighbors = lambda u: list(G_adj[u].keys())
+    for trial_num in range(max(20, num_deletion_trials*target_edges_to_delete)):
         if len(deled_edges_set) == target_edges_to_delete:
             break
         u = random.choice(all_nodes)
         degree_of_u = G_degree(u)
         if degree_of_u == 0: #will take care of this later
-            continue 
+            continue
         #too random w = random.choice(G_neighbors(u))
         w = find_node_to_unfriend(G, head=u, params=params, existing_nbs=G_neighbors(u))
         if w == None:
@@ -434,16 +463,16 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
         deled_edges_set.add((u,w))
         deprived_nodes += [u,w]
 
-    if enforce_connected: 
+    if enforce_connected:
         new_edges = check_and_fix_connectivity(G, params)
         added_edges_set.update(new_edges)
-    
+
     num_remaining_edges_to_add = target_edges_to_add - len(added_edges_set)
-    edge_welfare_fraction = params.get('edge_welfare_fraction', 0.0)  
-    long_bridging         = params.get('long_bridging', False)  
+    edge_welfare_fraction = params.get('edge_welfare_fraction', 0.0)
+    long_bridging         = params.get('long_bridging', False)
     #whether it should try to build edges to nodes which lost them;  not supported for all edges or for edges lost during node deletion
 
-    for trial_num in xrange(max(20, 3*target_edges_to_add)): 
+    for trial_num in range(max(20, 3*target_edges_to_add)):
         if num_remaining_edges_to_add <= 0:  #we might overshoot, hence <= 0 not ==
             break
         if npr.rand() > edge_welfare_fraction or len(deprived_nodes) == 0:
@@ -451,7 +480,7 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
         else:
             head = random.choice(deprived_nodes)
         if G_degree(head) == 0 and tpl_data['chance_edge_prob'] == 0.0:
-            continue 
+            continue
         tail = find_node_to_friend_hits(G=G, head=head, tpl_data=tpl_data, params=params, existing_nbs=G_neighbors(head))
         if tail == None or tail == head or G.has_edge(head,tail):
             continue
@@ -460,12 +489,12 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
         #sys.stdout.write(',%.3f\n'%nx.clustering(G, head))
         added_edges_set.add((head,tail))
         num_remaining_edges_to_add -= 1
-        
+
     num_edges_added   = len(added_edges_set)
     num_edges_deleted = len(deled_edges_set)
     #print num_edges_added, num_edges_deleted, G.number_of_edges()
     if num_edges_added > 20 and (num_edges_added-target_edges_to_add)/float(num_edges_added)> 0.2:
-        print_warning(params, 'Warning: Excessive number of edges were added. Is the graph treelike (low AvgDegree and connected)? AvgDegree=%.1f.'%np.average(nx.degree(G).values()))
+        print_warning(params, 'Warning: Excessive number of edges were added. Is the graph treelike (low AvgDegree and connected)? AvgDegree=%.1f.'%np.average(list(nx.degree(G).values())))
         #this might be caused by node edits.  in that case, try minorizing_node_deletion
     if num_edges_added > 20 and (target_edges_to_add-num_edges_added)/float(num_edges_added)> 0.2:
         print_warning(params, 'Warning: Excessive number of edges failed to add.   Consider setting locality_bias_correction to negative values.')
@@ -476,7 +505,7 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
         if nx.density(G) > 0.6:
             print_warning(params, 'Is the graph too dense? Density=%.2f'%nx.density(G))
     if verbose:
-        print '\tadded edges: %d, deleted edges: %d'%(num_edges_added,num_edges_deleted)
+        print('\tadded edges: %d, deleted edges: %d'%(num_edges_added,num_edges_deleted))
 
     if 'edit_edges_tester' in params:
         params['edit_edges_tester'](G, added_edges_set, deled_edges_set, tpl_data)
@@ -489,7 +518,7 @@ def edit_edges_sequential(G, edge_edit_rate, edge_growth_rate, tpl_data, params)
 def edit_nodes_sequential(G, node_edit_rate, node_growth_rate, tpl_data, params):
     verbose = params.get('verbose', True)
     if verbose:
-        print 'nn: %d'%G.number_of_nodes()
+        print('nn: %d'%G.number_of_nodes())
     try:
         edit_rate = node_edit_rate != [] and float(node_edit_rate[0]) or 0.
         if edit_rate < 0. or edit_rate > 1.: raise
@@ -502,18 +531,18 @@ def edit_nodes_sequential(G, node_edit_rate, node_growth_rate, tpl_data, params)
         print_warning(params, 'Bad or truncated node growth rate information!  Defaulting to 0')
         growth_rate = 0.
     if verbose:
-        print '  Node rates: edit %f, growth %f'%(edit_rate,growth_rate)
+        print('  Node rates: edit %f, growth %f'%(edit_rate,growth_rate))
     if G.number_of_nodes() == 0:
         if verbose:
-            print 'Num nodes = 0 ... editing canceled'
+            print('Num nodes = 0 ... editing canceled')
         return G
 
     new_edge_horizon   = params.get('new_edge_horizon', estimate_horizon(G))  #no edges added to nodes beyond the horizon
     if new_edge_horizon in params and new_edge_horizon > 5 and nx.density(G) > 0.2 and G.number_of_nodes() > 500:
         print_warning(params, 'Warning: using a large horizon (%d) on a large graph might use a lot of time'%new_edge_horizon)
-    
+
     num_deleted_nodes = npr.binomial(G.number_of_nodes(), edit_rate)
-    num_added_nodes   = npr.binomial(G.number_of_nodes(), edit_rate) 
+    num_added_nodes   = npr.binomial(G.number_of_nodes(), edit_rate)
     if growth_rate > 0:
         num_added_nodes   += int(round(G.number_of_nodes() * growth_rate))
     else:
@@ -524,11 +553,11 @@ def edit_nodes_sequential(G, node_edit_rate, node_growth_rate, tpl_data, params)
 
     G_adj = G.adj
     G_degree    = lambda u: G_adj[u].__len__()
-    G_neighbors = lambda u: G_adj[u].keys()
+    G_neighbors = lambda u: list(G_adj[u].keys())
     #we cache edges-to-add to avoid skewing these statistics during the editing process
     original_nodes = G.nodes()
-    added_node_info = {} 
-    for i in xrange(num_added_nodes):
+    added_node_info = {}
+    for i in range(num_added_nodes):
         source_node = random.choice(original_nodes)
         new_node    = new_node_label(G)
         added_node_info[new_node] = G_degree(source_node)
@@ -549,7 +578,7 @@ def edit_nodes_sequential(G, node_edit_rate, node_growth_rate, tpl_data, params)
         G.add_edge(new_node, anchor_node)
         num_edges_added += 1
         num_remaining_nbs_to_add -= 1
-        for trial_num in xrange(max(40, 3*num_remaining_nbs_to_add)):
+        for trial_num in range(max(40, 3*num_remaining_nbs_to_add)):
             if num_remaining_nbs_to_add == 0:
                 break
             v = find_node_to_friend_hits(G=G, head=new_node, tpl_data=tpl_data, params=params, existing_nbs=G_neighbors(new_node))
@@ -561,7 +590,7 @@ def edit_nodes_sequential(G, node_edit_rate, node_growth_rate, tpl_data, params)
         if num_remaining_nbs_to_add > 0:
             failed_searches += 1
     added_nodes_set = set(added_node_info.keys())
-        
+
     deled_nodes_set = set()
     minorizing_node_deletion = params.get('minorizing_node_deletion', False)
     for u in random.sample(G.nodes(), num_deleted_nodes):
@@ -569,7 +598,7 @@ def edit_nodes_sequential(G, node_edit_rate, node_growth_rate, tpl_data, params)
         if minorizing_node_deletion: #connect the neighbors into a tree
             nbrs = G_neighbors(u)
             random.shuffle(nbrs)
-            for nb_idx,nb in enumerate(nbrs[:-1]):  
+            for nb_idx,nb in enumerate(nbrs[:-1]):
                 new_edge = (nb, nbrs[nb_idx+1])
                 if not G.has_edge(*new_edge):
                     #assert new_edge[0] != new_edge[1]
@@ -583,13 +612,14 @@ def edit_nodes_sequential(G, node_edit_rate, node_growth_rate, tpl_data, params)
         if nx.density(G) > 0.6:
             print_warning(params, 'Is the graph too dense? Density=%.2f'%nx.density(G))
     if verbose:
-        print '\tadded nodes: %d, deleted nodes: %d'%(num_added_nodes,num_deleted_nodes)
-        print '\tadded edges: %d, deleted edges: %d'%(num_edges_added,num_edges_deleted)
+        print('\tadded nodes: %d, deleted nodes: %d'%(num_added_nodes,num_deleted_nodes))
+        print('\tadded edges: %d, deleted edges: %d'%(num_edges_added,num_edges_deleted))
 
     if 'edit_nodes_tester' in params:
         params['edit_nodes_tester'](G, added_nodes_set, deled_nodes_set, tpl_data)
 
     return G
+
 
 def estimate_horizon(G):
     density = nx.density(G)
@@ -599,8 +629,8 @@ def estimate_horizon(G):
     return 20
 
 def find_node_to_friend_basic(G, head, tpl_data, params, existing_nbs=None):
-    locality_acceptor = tpl_data['locality_acceptor'] 
-    #implicit: chance_edge_prob  = tpl_data['chance_edge_prob'] 
+    locality_acceptor = tpl_data['locality_acceptor']
+    #implicit: chance_edge_prob  = tpl_data['chance_edge_prob']
     weighted_step = params.get('weighted_step', False)
     sm = sum
     rds = random.shuffle
@@ -617,20 +647,20 @@ def find_node_to_friend_basic(G, head, tpl_data, params, existing_nbs=None):
 
     num_insertion_trials = params.get('num_insertion_trials', 30)
     num_insertion_searches_per_distance = params.get('num_insertion_searches_per_distance', 20)
-    for trial in xrange(num_insertion_trials):
+    for trial in range(num_insertion_trials):
         #sample from np.random.multinomial()
-        toss = npr.rand() 
+        toss = npr.rand()
         for dis, prob in enumerate(locality_acceptor):
             toss -= prob
             if toss < 0:
                 break
-        for search_num in xrange(num_insertion_searches_per_distance):
+        for search_num in range(num_insertion_searches_per_distance):
             if toss < 0 and len(existing_nbs) > 0:
                 cur_loc = find_next(G=G, start_node=head, weighted_step=weighted_step, blocked=(), rds=rds, sm=sm)
                 blocked = set([head, cur_loc])
                 next_loc = None
                 tail = None
-                for d in xrange(2, dis+1):
+                for d in range(2, dis+1):
                     next_loc = find_next(G=G, start_node=cur_loc, weighted_step=weighted_step, blocked=blocked, rds=rds, sm=sm)
                     if next_loc == None:  #stuck in a self-made corner
                         break
@@ -640,7 +670,7 @@ def find_node_to_friend_basic(G, head, tpl_data, params, existing_nbs=None):
                     tail = next_loc
                     #print 'tail %s at distance %d steps'%(tail,dis)
             else:
-                for i in xrange(G.number_of_nodes()):
+                for i in range(G.number_of_nodes()):
                     if all_nodes == None:
                         all_nodes = G.nodes()
                     candidate = random.choice(all_nodes)
@@ -654,8 +684,8 @@ def find_node_to_friend_basic(G, head, tpl_data, params, existing_nbs=None):
 
 
 def find_node_to_friend_hits(G, head, tpl_data, params, existing_nbs=None):
-    locality_acceptor = tpl_data['locality_acceptor'] 
-    #implicit: chance_edge_prob  = tpl_data['chance_edge_prob'] 
+    locality_acceptor = tpl_data['locality_acceptor']
+    #implicit: chance_edge_prob  = tpl_data['chance_edge_prob']
     weighted_step = params.get('weighted_step', False)
     sm = sum
     rds = random.shuffle
@@ -674,7 +704,7 @@ def find_node_to_friend_hits(G, head, tpl_data, params, existing_nbs=None):
     num_insertion_searches_per_distance = params.get('num_insertion_searches_per_distance', 30)
     tail = None
     hits = {}
-    
+
     if len(existing_nbs) == 0:
         return None
     #for trial in xrange(num_insertion_trials):
@@ -682,22 +712,22 @@ def find_node_to_friend_hits(G, head, tpl_data, params, existing_nbs=None):
     most_hits_candidate = None
     if True:
         #sample from np.random.multinomial()
-        toss = npr.rand() 
+        toss = npr.rand()
         for dis, prob in enumerate(locality_acceptor):
             toss -= prob
             if toss < 0:
                 break
-        for search_num in xrange(num_insertion_searches_per_distance):
+        for search_num in range(num_insertion_searches_per_distance):
             cur_loc = find_next(G=G, start_node=head, weighted_step=weighted_step, blocked=(), rds=rds, sm=sm)
             blocked = set([head, cur_loc])
             #hits[cur_loc] = 1
             next_loc = None
             d = 2 #in case the loop is not even started
-            for d in xrange(2, dis+1):
+            for d in range(2, dis+1):
                 cur_loc = find_next(G=G, start_node=cur_loc, weighted_step=weighted_step, blocked=blocked, rds=rds, sm=sm)
                 if cur_loc == None:  #stuck in a self-made corner
                     break
-            if d == dis and cur_loc != None:  
+            if d == dis and cur_loc != None:
                 cur_loc_hits  = hits.get(cur_loc, 0) + 1
                 hits[cur_loc] = cur_loc_hits
                 if (cur_loc_hits >= most_hits) and (cur_loc not in existing_nbs):
@@ -709,7 +739,7 @@ def find_node_to_friend_hits(G, head, tpl_data, params, existing_nbs=None):
             #    #print 'tail %s at distance %d steps'%(tail,dis)
     if most_hits_candidate != None:
         return most_hits_candidate
-    hits = hits.items()
+    hits = list(hits.items())
     hits.sort(lambda x,y: y[1]-x[1])
     for candidate, h in hits:
         if candidate not in existing_nbs:
@@ -723,8 +753,8 @@ def find_node_to_unfriend(G, head, params, existing_nbs=None):
     else:
         return random_one(existing_nbs)
 
-    #locality_acceptor = tpl_data['locality_acceptor'] 
-    #implicit: chance_edge_prob  = tpl_data['chance_edge_prob'] 
+    #locality_acceptor = tpl_data['locality_acceptor']
+    #implicit: chance_edge_prob  = tpl_data['chance_edge_prob']
     #weighted_step = params.get('weighted_step', False)
     #sm = sum  #maybe avoid a weighted walk?
     #rds = random.shuffle
@@ -739,7 +769,7 @@ def find_node_to_unfriend(G, head, params, existing_nbs=None):
     #tail = None
     #hits = {}
 
-    #new_edge_horizon     = params.get('new_edge_horizon', estimate_horizon(G))  
+    #new_edge_horizon     = params.get('new_edge_horizon', estimate_horizon(G))
     #for search_num in xrange(num_insertion_searches_per_distance):
     #    cur_loc = find_next(G=G, start_node=head, weighted_step=weighted_step, blocked=(), rds=rds, sm=sm)
     #    blocked = set([head, cur_loc])
@@ -761,10 +791,10 @@ def find_node_to_unfriend(G, head, params, existing_nbs=None):
     ##return None
 
 
-def flush_graph(G):            
-#the algorithm relabels the nodes of the graph at random 
+def flush_graph(G):
+#the algorithm relabels the nodes of the graph at random
 #-> data on aggregates becomes obsolete and is so never used
-    node_map = {} 
+    node_map = {}
     for node in G:
         while True:
             new_name = new_node_label(G)
@@ -775,7 +805,7 @@ def flush_graph(G):
     return G
 
 
-def generate_graph(original, params=None):
+def generate_graph(original, params=None, planar=False):
 #main entry point
     if params == None:
         params = {}
@@ -784,7 +814,7 @@ def generate_graph(original, params=None):
     if params.get('algorithm', False):
         params2 = params.copy()
         alg_info = params2.pop('algorithm')
-        if callable(alg_info):
+        if isinstance(alg_info, collections.Callable):
             alg_method = alg_info
         elif type(alg_info) is str:
             alg_method = eval(alg_method)
@@ -792,7 +822,7 @@ def generate_graph(original, params=None):
             alg_method           = alg_info[0]
             params2['algorithm'] = alg_info[1]
         else:
-            raise ValueError, 'algorithm parameter should be either callable, the name of a function, or (func,(nested_algorithm))'
+            raise ValueError('algorithm parameter should be either callable, the name of a function, or (func,(nested_algorithm))')
         return alg_method(original=original, params=params2)
 
     simpletesters.validate_params(params)
@@ -801,7 +831,7 @@ def generate_graph(original, params=None):
     edge_edit_rate   = params.get('edge_edit_rate', [])
     node_growth_rate = params.get('node_growth_rate', [])
     edge_growth_rate = params.get('edge_growth_rate', [])
- 
+
     #we might want to convert all nodes to integers for performance reasons
 
     original._musketeer_data = {}
@@ -809,19 +839,26 @@ def generate_graph(original, params=None):
     if params.get('verbose', True):
         sys.stdout.write('Checking original graph ... ')
         graphutils.graph_sanity_test(G, params)
-        sys.stdout.write('Done.'+os.linesep) 
+        sys.stdout.write('Done.'+os.linesep)
     start_time = time.time()
-
-    replica, model_map = revise_graph(G=G, level=0,
-                                node_edit_rate=node_edit_rate, 
-                                node_growth_rate=node_growth_rate, 
-                                edge_edit_rate=edge_edit_rate, 
-                                edge_growth_rate=edge_growth_rate, 
+    if planar:
+        replica, model_map = revise_graph_planar(G=G, level=0,
+                                node_edit_rate=node_edit_rate,
+                                node_growth_rate=node_growth_rate,
+                                edge_edit_rate=edge_edit_rate,
+                                edge_growth_rate=edge_growth_rate,
                                 params=params)
+    else:
+        replica, model_map = revise_graph(G=G, level=0,
+                                      node_edit_rate=node_edit_rate,
+                                      node_growth_rate=node_growth_rate,
+                                      edge_edit_rate=edge_edit_rate,
+                                      edge_growth_rate=edge_growth_rate,
+                                      params=params)
     if params.get('verbose', True):
-        print 'replica is finished. nn: %d.  time: %.2f sec.'%(replica.number_of_nodes(), time.time()-start_time)
-        print
-    
+        print('replica is finished. nn: %d.  time: %.2f sec.'%(replica.number_of_nodes(), time.time()-start_time))
+        print()
+
     replica      = resample_attributes(G, replica, model_map, params)
     replica.name = getattr(original, 'name', 'graph') + '_replica_' + timeNow()
     replica._musketeer_data = original._musketeer_data #WARNING shallow copy, to allow information to be passed from G to replicas
@@ -835,13 +872,13 @@ def generate_graph(original, params=None):
 
 
 
-def interpolate_edges(G, c_data, model_map, fine_model_map, params):    
+def interpolate_edges(G, c_data, model_map, fine_model_map, params):
     aggregates    = c_data['aggregates']
     merged_edges  = c_data['merged_edges']
     deep_copying  = params.get('deep_copying', True)
     if not deep_copying: assert len(model_map) == 0
-    
-    authentic_edges = merged_edges.items()
+
+    authentic_edges = list(merged_edges.items())
     edited_edges = []
     for (s1,s2) in G.edges_iter(): #wishlist: faster loop?
         if ((s1,s2) not in merged_edges) and ((s2,s1) not in merged_edges):
@@ -849,7 +886,7 @@ def interpolate_edges(G, c_data, model_map, fine_model_map, params):
     for (s1,s2) in edited_edges:
         trapped_in_s1 = aggregates[s1]
         trapped_in_s2 = aggregates[s2]
-        
+
         model_aggregate_1 = model_map.get(s1, None)
         model_aggregate_2 = model_map.get(s2, None)
         new_pairs = set()
@@ -878,6 +915,9 @@ def interpolate_edges(G, c_data, model_map, fine_model_map, params):
                 v = random.choice(trapped_in_s2)
                 if ((u,v) not in new_pairs) and ((v,u) not in new_pairs):
                     new_pairs.add((u,v))
+                    if not planarity.is_planar(new_pairs):
+                       new_pairs.remove((u,v))
+                        #print(u,v)
                 else:
                     num_failures += 1
         merged_edges[(s1,s2)] = [(u,v) for u,v in new_pairs]
@@ -885,7 +925,7 @@ def interpolate_edges(G, c_data, model_map, fine_model_map, params):
     return c_data
 
 
-def interpolate_nodes(G, c_data, model_map, params):    
+def interpolate_nodes(G, c_data, model_map, params):
     '''
     constructs the interior of nodes just added to the graph G, preparing it for uncoarsening
     interpolation is of two kinds: (node has just appeared in level i)                       -> we randomly select a "model node".  then we insert its internal structure from the existing graph.
@@ -902,10 +942,10 @@ def interpolate_nodes(G, c_data, model_map, params):
         assert len(model_map) == 0
 
 
-    #this_level_node A -> node in G_i original of which is the model of A 
+    #this_level_node A -> node in G_i original of which is the model of A
     fine_model_map = {}
-   
-    authentic_nodes = aggregates.keys()
+
+    authentic_nodes = list(aggregates.keys())
     assert authentic_nodes != []
     edited_nodes = [node for node in G if node not in aggregates]
     num_new_nodes = 0
@@ -922,7 +962,7 @@ def interpolate_nodes(G, c_data, model_map, params):
             fine_model_map[new_hosted_node]        = node_hosted_by_source
             num_new_nodes += 1
 
-        my_trapped_nodes = renamed_nodes.values()
+        my_trapped_nodes = list(renamed_nodes.values())
 
         my_trapped_edges = []
         for edge_hosted_by_source in sources_edges:
@@ -936,7 +976,7 @@ def interpolate_nodes(G, c_data, model_map, params):
         #might optionally pass an attribute 'new' in the node
         #num_added_nodes += len(my_trapped_nodes)
     if params.get('verbose', True):
-        print '  from new aggregates: %d nodes, %d edges'%(num_new_nodes,num_new_edges)
+        print('  from new aggregates: %d nodes, %d edges'%(num_new_nodes,num_new_edges))
     #print 'added: %d'%num_added_nodes
 
     if params.get('deep_copying', True):
@@ -956,38 +996,38 @@ def musketeer_on_subgraphs(original, params=None):
             replica = generate_graph(original=G, params=params)
         else:
             replica = G
-        
+
         merged_G = nx.union(merged_G, replica)
 
     merged_G.name = getattr(original, 'name', 'graph') + '_replica_' + timeNow()
-    
+
     return merged_G
 
 def musketeer_snapshots(original, params=None):
-#applies replication sequentially, generating snapshots of the original.  
-#returns the final snapshot.  
+#applies replication sequentially, generating snapshots of the original.
+#returns the final snapshot.
 #snapshots (0 to last) are held in the .snapshot attribute
     graphs = [original]
 
     num_snapshots = params['num_snapshots']
 
-    for graph_num in xrange(num_snapshots):
+    for graph_num in range(num_snapshots):
         G = graphs[-1]
         replica = generate_graph(original=G, params=params)
         replica.name = 'snapshot_%d'%graph_num
         graphs.append(replica)
 
     if params.get('verbose', True):
-        print 'Snapshots complete.'
-        print
+        print('Snapshots complete.')
+        print()
 
     replica.snapshots = graphs
-    
+
     return replica
 
 
 def musketeer_iterated_cycle(original, params=None):
-#applies replication sequentially, and returns the final snapshot.  
+#applies replication sequentially, and returns the final snapshot.
     num_cycles = params['num_v_cycles']
 
     params2 = params.copy()
@@ -995,30 +1035,30 @@ def musketeer_iterated_cycle(original, params=None):
     params2['edge_growth_rate'] = [r/float(num_cycles) for r in params2.get('edge_growth_rate', [])]
     params2['node_edit_rate']   = [r/float(num_cycles) for r in params2.get('node_edit_rate', [])]
     params2['node_growth_rate'] = [r/float(num_cycles) for r in params2.get('node_growth_rate', [])]
-    
+
     replica = original
-    for graph_num in xrange(num_cycles):
+    for graph_num in range(num_cycles):
         replica = generate_graph(original=replica, params=params2)
         replica.name = getattr(original, 'name', 'graph') + '_replica_w%d_'%graph_num + timeNow()
 
-    return replica 
+    return replica
 
 
 def new_node_label(G):
 #G is either a graph or a dict/list of existing labels
     num_trials = 100
     label = None
-    for t in xrange(num_trials):
+    for t in range(num_trials):
         label = npr.randint(max_int)
         if label not in G:
             break
     if label == None:
-        raise Exception, 'Could not find a unique label for a newly-added node'
+        raise Exception('Could not find a unique label for a newly-added node')
     return label
 
 def print_warning(params, str):
-    if not params.get('suppress_warnings', False): 
-        print str
+    if not params.get('suppress_warnings', False):
+        print(str)
 
 def resample_attributes(G, replica, model_map, params):
 #inserts attributes to new nodes and edges by COPYING data from existing nodes and edges
@@ -1030,10 +1070,10 @@ def resample_attributes(G, replica, model_map, params):
     original_nodes = G.nodes()
     G_adj = G.adj
     G_degree    = lambda u: G_adj[u].__len__()
-    G_neighbors = lambda u: G_adj[u].keys()
+    G_neighbors = lambda u: list(G_adj[u].keys())
     if maintain_node_attributes:
         if params.get('verbose', True):
-            print 'Updating node attributes ...'
+            print('Updating node attributes ...')
         for node in replica:
             if replica.node[node] != {}:
                 continue
@@ -1048,7 +1088,7 @@ def resample_attributes(G, replica, model_map, params):
 
     if maintain_edge_attributes and G.number_of_edges() > 0:
         if params.get('verbose', True):
-            print 'Updating edge attributes ...'
+            print('Updating edge attributes ...')
         for edge in replica.edges_iter():
             if replica.get_edge_data(*edge) != {}:
                 continue
@@ -1062,7 +1102,7 @@ def resample_attributes(G, replica, model_map, params):
                 if deep_copying and G.has_edge(modelA, modelB):
                     nodeA, nodeB = modelA, modelB
                 else:
-                    for trial in xrange(G.number_of_edges()):
+                    for trial in range(G.number_of_edges()):
                         nodeA = random.choice(original_nodes)
                         if G_degree(nodeA) == 0:
                             continue
@@ -1081,14 +1121,14 @@ def revise_graph(G, level, node_edit_rate, node_growth_rate, edge_edit_rate, edg
     excess_density = G.number_of_edges() == 0 or nx.density(G) > params.get('coarsening_density_limit', 0.9)
     if no_more_coarse or excess_density:
         if excess_density:
-            if params.get('verbose', True): 
-                print 'Coarsening stopped due to excess density'
+            if params.get('verbose', True):
+                print('Coarsening stopped due to excess density')
                 if not no_more_coarse:
-                    print 'Editing at deeper levels is impossible.  CHANGE editing parameters.'
-        if params.get('verbose', True): 
-            print 'Final coarsening level. nodes: %d, edges: %d'%(G.number_of_nodes(), G.number_of_edges())
-            print '---------------------------------------------'
-        if params.get('memoriless_interpolation', False): 
+                    print('Editing at deeper levels is impossible.  CHANGE editing parameters.')
+        if params.get('verbose', True):
+            print('Final coarsening level. nodes: %d, edges: %d'%(G.number_of_nodes(), G.number_of_edges()))
+            print('---------------------------------------------')
+        if params.get('memoriless_interpolation', False):
             G_prime = flush_graph(G)
         else:
             G_prime = G
@@ -1104,22 +1144,63 @@ def revise_graph(G, level, node_edit_rate, node_growth_rate, edge_edit_rate, edg
         c_data_prime                 = interpolate_edges(coarse, c_data_prime, model_map, fine_model_map, params)
         clean_c_data(coarse, c_data_prime)
         G_prime                      = do_uncoarsen(coarse, c_data_prime, params)
-    
+
     #editing of the current level
     tpl_data = compute_topology_data(G, level, params)
 
     G_prime  = edit_nodes_sequential(G_prime, node_edit_rate, node_growth_rate, tpl_data, params)
     G_prime  = edit_edges_sequential(G_prime, edge_edit_rate, edge_growth_rate, tpl_data, params)
-    
     if 'revise_graph_tester' in params:
         params['revise_graph_tester'](G, G_prime, c_data_prime)
-    if params.get('retain_intermediates', False): 
+    if params.get('retain_intermediates', False):
         G_prime.model_graph, G_prime.coarser_graph = G, coarse
     else:
         G_prime.model_graph, G_prime.coarser_graph = None, None
 
     return G_prime, fine_model_map
 
+def revise_graph_planar(G, level, node_edit_rate, node_growth_rate, edge_edit_rate, edge_growth_rate, params):
+#revises a graph at a particular resolution and deeper
+    no_more_coarse = len(node_edit_rate) < 2 and len(edge_edit_rate) < 2 and len(node_growth_rate) < 2 and len(edge_growth_rate) < 2
+    excess_density = G.number_of_edges() == 0 or nx.density(G) > params.get('coarsening_density_limit', 0.9)
+    if no_more_coarse or excess_density:
+        if excess_density:
+            if params.get('verbose', True):
+                print('Coarsening stopped due to excess density')
+                if not no_more_coarse:
+                    print('Editing at deeper levels is impossible.  CHANGE editing parameters.')
+        if params.get('verbose', True):
+            print('Final coarsening level. nodes: %d, edges: %d'%(G.number_of_nodes(), G.number_of_edges()))
+            print('---------------------------------------------')
+        if params.get('memoriless_interpolation', False):
+            G_prime = flush_graph(G)
+        else:
+            G_prime = G
+        fine_model_map = {}
+        G_prime.coarser_graph = None
+        coarse = None
+        #return G, {}
+    else:
+        coarse, c_data               = do_coarsen(G, params)
+        coarse, model_map            = revise_graph_planar(coarse, level+1, node_edit_rate[1:], node_growth_rate[1:], edge_edit_rate[1:], edge_growth_rate[1:], params)
+        c_data_prime                 = copy.deepcopy(c_data)  #we are now going to start playing with it;  wishlist: support injection
+        c_data_prime, fine_model_map = interpolate_nodes(coarse, c_data_prime, model_map, params)
+        clean_c_data(coarse, c_data_prime)
+        G_prime                      = do_uncoarsen_planar(coarse, c_data_prime, model_map, fine_model_map, params)
+
+    #editing of the current level
+    tpl_data = compute_topology_data(G, level, params)
+
+    G_prime  = edit_nodes_sequential_planar(G_prime, node_edit_rate, node_growth_rate, tpl_data, params)
+    G_prime  = edit_edges_sequential_planar(G_prime, edge_edit_rate, edge_growth_rate, tpl_data, params)
+    if 'revise_graph_tester' in params:
+        params['revise_graph_tester'](G, G_prime, c_data_prime)
+    if params.get('retain_intermediates', False):
+        G_prime.model_graph, G_prime.coarser_graph = G, coarse
+    else:
+        G_prime.model_graph, G_prime.coarser_graph = None, None
+
+    return G_prime, fine_model_map
 
 def seed_finder_matching(G, params):
     '''
@@ -1137,7 +1218,7 @@ def seed_finder_matching(G, params):
     #all the matching algorithms return a dictionary u->v and v->u
     #matching_algorithm  = params.get('matching_algorithm', nx.max_weight_matching)
     matching_algorithm  = params.get('matching_algorithm', graphutils.drake_hougardy)
-    
+
     matching = matching_algorithm(G)
     for nodeA in matching:
         nodeB = matching[nodeA]
@@ -1156,19 +1237,19 @@ def seed_finder_matching(G, params):
         seeds.add(node)
         aggregates[node] = [node]
         home_nodes[node] = node
-    
+
     return seeds, home_nodes, aggregates
 
 
 def seed_finder_weight_alg(G, params):
     '''
-    coarsening inspired by Safro et al. 
+    coarsening inspired by Safro et al.
         Graph minimum linear arrangement by multilevel weighted edge contractions
     1. nodes have weights that represent nodes previously included in them
     2a. nodes with high expected weight (>= 2 of average) automatically become seeds
         expected weight = self weight + total weight of neighbors
     2b. we go over the remaining nodes in order of decreasing future weight
-        and make them seeds when (sum of neighbor expect_wts who are seeds) / (sum over all nbs) < 0.4  
+        and make them seeds when (sum of neighbor expect_wts who are seeds) / (sum over all nbs) < 0.4
     3. the remaining nodes are assigned to a neighboring seeds that has the greatest wt
     '''
 
@@ -1181,7 +1262,7 @@ def seed_finder_weight_alg(G, params):
 
     G_adj = G.adj
     G_degree    = lambda u: G_adj[u].__len__()
-    G_neighbors = lambda u: G_adj[u].keys()
+    G_neighbors = lambda u: list(G_adj[u].keys())
     expected_wt_dict = {}
     for node in G:
         if G_degree(node) == 0: #singletons mess up seed finding by pulling down the average wt, but then become seeds themselves
@@ -1190,11 +1271,11 @@ def seed_finder_weight_alg(G, params):
             expected_wt_dict[node] = G.node[node].get('weight', 1.) + sum(G.node[nb].get('weight', 1.) for nb in G_neighbors(node))
 
     if G.number_of_edges() > 0:
-        mean_exp_wt = np.average(expected_wt_dict.values()) 
+        mean_exp_wt = np.average(list(expected_wt_dict.values()))
     else:
         mean_exp_wt = 0.
 
-    expected_wt = expected_wt_dict.items()
+    expected_wt = list(expected_wt_dict.items())
     expected_wt.sort(key=lambda x:x[1], reverse=True)
     for node,wt in expected_wt:
         if wt > seed_threshold_1*mean_exp_wt:
@@ -1208,11 +1289,11 @@ def seed_finder_weight_alg(G, params):
 
     for node in free_nodes:
         nearby_seeds = seeds.intersection(G_neighbors(node))
-        seed_attraction = [(seed,G.edge[node][seed].get('weight', 1.0)) for seed in nearby_seeds] 
+        seed_attraction = [(seed,G.edge[node][seed].get('weight', 1.0)) for seed in nearby_seeds]
         my_aggregate = max(seed_attraction, key=lambda x:x[1])[0]
         aggregates[my_aggregate].append(node)
         home_nodes[node] = my_aggregate
-    
+
     #print 'Aggregate sizes
     #print np.histogram([len(x) for x in aggregates.values()], bins=range(1,20))
 
@@ -1235,7 +1316,7 @@ def strong_clustering_structure(G, u, w, params):
 
 def weighted_step(G, start_node, valid_options=None, sm=sum):
     if valid_options == None:
-        nb_wt   = [(nb,nb_data.get('weight', 1.)) for nb,nb_data in G.edge[start_node].items()]
+        nb_wt   = [(nb,nb_data.get('weight', 1.)) for nb,nb_data in list(G.edge[start_node].items())]
     else:
         nbs = G.edge[start_node]
         nb_wt   = [(nb,nbs[nb].get('weight', 1.)) for nb in valid_options]
@@ -1251,7 +1332,7 @@ def weighted_step(G, start_node, valid_options=None, sm=sum):
     return nb_wt[-1][0]
 
 def weighted_step_advanced(G, start_node, weighted_step, blocked, rds, sm=None):
-    nb_wt = G.edge[start_node].items()
+    nb_wt = list(G.edge[start_node].items())
     if not weighted_step:
         #TODO: in most cases, we are fine just doing 10 random selections, and then giving up - we would just not guarantee that None means fully blocked
         rds(nb_wt)  #shuffling is O(n); selection is O(1)
@@ -1284,7 +1365,7 @@ def weighted_step_advanced(G, start_node, weighted_step, blocked, rds, sm=None):
 def weighted_step2(G, start_node, valid_options=None):
     #uses npr.multinomial.  slower than the other version
     if valid_options == None:
-        nb_wt   = [(nb,nb_data.get('weight', 1.)) for nb,nb_data in G.edge[start_node].items()]
+        nb_wt   = [(nb,nb_data.get('weight', 1.)) for nb,nb_data in list(G.edge[start_node].items())]
     else:
         nbs = G.edge[start_node]
         nb_wt   = [(nb,nbs[nb].get('weight', 1.)) for nb in valid_options]
@@ -1296,3 +1377,403 @@ def weighted_step2(G, start_node, valid_options=None):
 
     return nb_wt[selects.nonzero()[0][0]][0]
 
+def interpolate_non_edited_nodes_edges(G, c_data, model_map, fine_model_map, params):
+    aggregates = c_data['aggregates']
+    merged_edges = c_data['merged_edges']
+    deep_copying = params.get('deep_copying', True)
+    if not deep_copying: assert len(model_map) == 0
+
+    edited_edges = []
+    for (s1, s2) in G.edges_iter():  # wishlist: faster loop?
+        if ((s1, s2) not in merged_edges) and ((s2, s1) not in merged_edges):
+            edited_edges.append((s1, s2))
+    for (s1, s2) in edited_edges:
+        trapped_in_s1 = aggregates[s1]
+        trapped_in_s2 = aggregates[s2]
+
+        model_aggregate_1 = model_map.get(s1, None)
+        model_aggregate_2 = model_map.get(s2, None)
+        new_pairs = set()
+        if deep_copying:
+            merged_model_edge_contents = merged_edges.get((model_aggregate_1, model_aggregate_2), None)
+            if merged_model_edge_contents == None:
+                merged_model_edge_contents = merged_edges.get((model_aggregate_2, model_aggregate_1), None)
+        exact_interpolation = deep_copying and (merged_model_edge_contents != None)
+        if exact_interpolation:  # occurs only if s1 and s2 are deep-copied from an edge that existed in the original graph
+            reversed_map = {}
+            for trapped_node in trapped_in_s1 + trapped_in_s2:
+                reversed_map[fine_model_map[trapped_node]] = trapped_node
+            for mA, mB in merged_model_edge_contents:
+                u = reversed_map[mA]
+                v = reversed_map[mB]
+                new_pairs.add((u, v))
+        merged_edges[(s1, s2)] = [(u, v) for u, v in new_pairs]
+        # might optionally pass an attribute 'new' in the edges
+    return c_data
+
+def interpolate_edited_edges(G, c_data, model_map, fine_model_map, params):
+    aggregates = c_data['aggregates']
+    merged_edges = c_data['merged_edges']
+    deep_copying = params.get('deep_copying', True)
+    if not deep_copying: assert len(model_map) == 0
+
+    authentic_edges = list(merged_edges.items())
+    edited_edges = []
+    for (s1, s2) in G.edges_iter():  # wishlist: faster loop?
+        if ((s1, s2) not in merged_edges) and ((s2, s1) not in merged_edges):
+            edited_edges.append((s1, s2))
+    for (s1, s2) in edited_edges:
+        trapped_in_s1 = aggregates[s1]
+        trapped_in_s2 = aggregates[s2]
+        model_aggregate_1 = model_map.get(s1, None)
+        model_aggregate_2 = model_map.get(s2, None)
+        new_pairs = set()
+        if deep_copying:
+            merged_model_edge_contents = merged_edges.get((model_aggregate_1, model_aggregate_2), None)
+            if merged_model_edge_contents == None:
+                merged_model_edge_contents = merged_edges.get((model_aggregate_2, model_aggregate_1), None)
+        exact_interpolation = deep_copying and (merged_model_edge_contents != None)
+        if not exact_interpolation:
+            if authentic_edges != []:
+                random_model_edge, random_model_edge_contents = random.choice(authentic_edges)
+                num_target_edges = len(random_model_edge_contents)
+            else:
+                num_target_edges = 1
+            num_failures = 0
+            while len(new_pairs) < num_target_edges and num_failures < max(10, 3 * num_target_edges):
+                u = random.choice(trapped_in_s1)
+                v = random.choice(trapped_in_s2)
+                if ((u, v) not in new_pairs) and ((v, u) not in new_pairs):
+                    new_pairs.add((u, v))                        # print(u,v)
+                else:
+                    num_failures += 1
+        merged_edges[(s1, s2)] = [(u, v) for u, v in new_pairs]
+        # might optionally pass an attribute 'new' in the edges
+    return c_data
+
+def edit_nodes_sequential_planar(G, node_edit_rate, node_growth_rate, tpl_data, params):
+    verbose = params.get('verbose', True)
+    if verbose:
+        print('nn: %d'%G.number_of_nodes())
+    try:
+        edit_rate = node_edit_rate != [] and float(node_edit_rate[0]) or 0.
+        if edit_rate < 0. or edit_rate > 1.: raise
+    except:
+        print_warning(params, 'Bad or truncated node edit rate information!  Defaulting to 0')
+        edit_rate = 0.
+    try:
+        growth_rate = node_growth_rate != [] and float(node_growth_rate[0]) or 0.
+    except:
+        print_warning(params, 'Bad or truncated node growth rate information!  Defaulting to 0')
+        growth_rate = 0.
+    if verbose:
+        print('  Node rates: edit %f, growth %f'%(edit_rate,growth_rate))
+    if G.number_of_nodes() == 0:
+        if verbose:
+            print('Num nodes = 0 ... editing canceled')
+        return G
+
+    new_edge_horizon   = params.get('new_edge_horizon', estimate_horizon(G))  #no edges added to nodes beyond the horizon
+    if new_edge_horizon in params and new_edge_horizon > 5 and nx.density(G) > 0.2 and G.number_of_nodes() > 500:
+        print_warning(params, 'Warning: using a large horizon (%d) on a large graph might use a lot of time'%new_edge_horizon)
+
+    num_deleted_nodes = npr.binomial(G.number_of_nodes(), edit_rate)
+    num_added_nodes   = npr.binomial(G.number_of_nodes(), edit_rate)
+    if growth_rate > 0:
+        num_added_nodes   += int(round(G.number_of_nodes() * growth_rate))
+    else:
+        num_deleted_nodes += int(round(G.number_of_nodes() * (-growth_rate)))
+    if num_deleted_nodes > G.number_of_nodes():
+        print_warning(params, 'Warning: excess negative growth rate. Deletion of nodes will destroy all the nodes of the graph.  Editing aborted at this level.')
+        return G
+
+    G_adj = G.adj
+    G_degree    = lambda u: G_adj[u].__len__()
+    G_neighbors = lambda u: list(G_adj[u].keys())
+    #we cache edges-to-add to avoid skewing these statistics during the editing process
+    original_nodes = G.nodes()
+    added_node_info = {}
+    for i in range(num_added_nodes):
+        source_node = random.choice(original_nodes)
+        new_node    = new_node_label(G)
+        added_node_info[new_node] = G_degree(source_node)
+        #G.node[new_node]['resampling_source'] = source_node
+
+    num_edges_added = 0
+    num_edges_deleted = 0
+    failed_searches = 0
+    for new_node in added_node_info:
+        degree_new_node = 0
+        G.add_node(new_node)
+        num_remaining_nbs_to_add = added_node_info[new_node]
+        if num_remaining_nbs_to_add == 0:
+            continue
+        #uncomment below and use 'enforce_connected':False to see the aggregates.  WARNING: comment back when done
+        #continue
+
+        anchor_node = random.choice(original_nodes)
+        G.add_edge(new_node, anchor_node)
+        if not planarity.is_planar(G):
+            G.remove_edge(new_node, anchor_node)
+        else:
+            degree_new_node +=1
+        num_edges_added += 1
+        num_remaining_nbs_to_add -= 1
+        for trial_num in range(max(40, 3*num_remaining_nbs_to_add)):
+            if num_remaining_nbs_to_add == 0:
+                break
+            v = find_node_to_friend_hits(G=G, head=new_node, tpl_data=tpl_data, params=params, existing_nbs=G_neighbors(new_node))
+            if v == None or v == new_node or v in G_neighbors(new_node):
+                continue
+            G.add_edge(new_node, v)
+            if not planarity.is_planar(G):
+                G.remove_edge(new_node, v)
+            else:
+                degree_new_node+=1
+            num_edges_added += 1
+            num_remaining_nbs_to_add -= 1
+        if num_remaining_nbs_to_add > 0:
+            failed_searches += 1
+        if degree_new_node < 1:
+            G.remove_node(new_node)
+    added_nodes_set = set(added_node_info.keys())
+
+
+    deled_nodes_set = set()
+    minorizing_node_deletion = params.get('minorizing_node_deletion', False)
+    for u in random.sample(G.nodes(), num_deleted_nodes):
+        num_edges_deleted += G_degree(u)
+        if minorizing_node_deletion: #connect the neighbors into a tree
+            nbrs = G_neighbors(u)
+            random.shuffle(nbrs)
+            for nb_idx,nb in enumerate(nbrs[:-1]):
+                new_edge = (nb, nbrs[nb_idx+1])
+                if not G.has_edge(*new_edge):
+                    #assert new_edge[0] != new_edge[1]
+                    G.add_edge(*new_edge)
+                    if not planarity.is_planar(G):
+                        G.remove_edge(*new_edge)
+                    num_edges_added += 1
+        G.remove_node(u)
+        deled_nodes_set.add(u)
+
+    if len(original_nodes) !=0 and len(original_nodes)>10 and (float(failed_searches)/len(original_nodes)) > .2:
+        print_warning(params, 'Warning: > 20%% of searches failed when attempting to insert edges.')
+        if nx.density(G) > 0.6:
+            print_warning(params, 'Is the graph too dense? Density=%.2f'%nx.density(G))
+    if verbose:
+        print('\tadded nodes: %d, deleted nodes: %d'%(num_added_nodes,num_deleted_nodes))
+        print('\tadded edges: %d, deleted edges: %d'%(num_edges_added,num_edges_deleted))
+
+    if 'edit_nodes_tester' in params:
+        params['edit_nodes_tester'](G, added_nodes_set, deled_nodes_set, tpl_data)
+
+    return G
+
+def edit_edges_sequential_planar(G, edge_edit_rate, edge_growth_rate, tpl_data, params):
+    #edit edges: first delete, then insert
+    verbose = params.get('verbose', True)
+    try:
+        edit_rate = edge_edit_rate != [] and float(edge_edit_rate[0]) or 0.
+        if edit_rate < 0. or edit_rate > 1.: raise
+    except:
+        print_warning(params, 'Bad or truncated edge edit rate information!  Defaulting to 0')
+        edit_rate = 0.
+    try:
+        growth_rate = edge_growth_rate != [] and float(edge_growth_rate[0]) or 0.
+    except:
+        print_warning(params, 'Bad or truncated edge growth rate information!  Defaulting to 0')
+        growth_rate = 0.
+    if verbose:
+        print('  Edge rates: edit %f, growth %f'%(edit_rate,growth_rate))
+    if G.number_of_nodes() == 0:
+        if verbose:
+            print('Num nodes = 0 ... editing canceled')
+        return G
+
+    new_edge_horizon   = params.get('new_edge_horizon', estimate_horizon(G))  #no edges added to nodes beyond the horizon
+    if new_edge_horizon in params and nx.density(G) > 0.2 and G.number_of_nodes() > 500:
+        print_warning(params, 'Warning: using a large horizon (%d) on a large graph might use a lot of time'%new_edge_horizon)
+
+    if 'enforce_connected' in params:
+        enforce_connected = params['enforce_connected']
+    else:
+        enforce_connected = tpl_data['enforce_connected']
+    dont_cutoff_leafs = params.get('dont_cutoff_leafs', False)
+    #do we allow leafs to be cut off completely?
+    #   this option should be used sparingly, as it disrupts deferential detachment and decreases clustering
+
+    all_nodes = G.nodes()
+    added_edges_set = set()
+    deled_edges_set = set()
+    target_edges_to_delete = npr.binomial(max(G.number_of_edges(), 1), edit_rate)
+    target_edges_to_add    = npr.binomial(max(G.number_of_edges(), 1), edit_rate)  #should be here, since NumEdges will change
+    if growth_rate > 0:
+        target_edges_to_add    += int(round(G.number_of_edges() * growth_rate))
+    else:
+        target_edges_to_delete += int(round(G.number_of_edges() * (-growth_rate)))
+
+    deprived_nodes = [] #list of nodes that lost edges, including repetitions
+    deferential_detachment_factor = params.get('deferential_detachment_factor', 0.0)
+    avg_degree = np.average(list(nx.degree(G).values()))  #inexact deferential detachment, but with a much higher sampling efficiency
+    num_deletion_trials           = params.get('num_deletion_trials', int(round(avg_degree**2)) )
+
+    G_adj = G.adj
+    G_degree    = lambda u: G_adj[u].__len__()
+    G_neighbors = lambda u: list(G_adj[u].keys())
+    for trial_num in range(max(20, num_deletion_trials*target_edges_to_delete)):
+        if len(deled_edges_set) == target_edges_to_delete:
+            break
+        u = random.choice(all_nodes)
+        degree_of_u = G_degree(u)
+        if degree_of_u == 0: #will take care of this later
+            continue
+        #too random w = random.choice(G_neighbors(u))
+        w = find_node_to_unfriend(G, head=u, params=params, existing_nbs=G_neighbors(u))
+        if w == None:
+            continue
+        degree_of_w = G_degree(w)
+        #perhaps a slight improvement is to multiply not by avg_degree but by avg_nb_degree
+        if npr.rand()*deferential_detachment_factor > avg_degree/float(degree_of_u*degree_of_w):
+            continue
+        if dont_cutoff_leafs and (degree_of_u == 1 or degree_of_w == 1):
+            continue
+        #this improves clustering but it is a an unprincipled approach
+        #if strong_clustering_structure(G, u, w, params):
+        #    continue
+        G.remove_edge(u,w)
+        deled_edges_set.add((u,w))
+        deprived_nodes += [u,w]
+
+    if enforce_connected:
+        new_edges = check_and_fix_connectivity_planar(G, params)
+        added_edges_set.update(new_edges)
+
+    num_remaining_edges_to_add = target_edges_to_add - len(added_edges_set)
+    edge_welfare_fraction = params.get('edge_welfare_fraction', 0.0)
+    long_bridging         = params.get('long_bridging', False)
+    #whether it should try to build edges to nodes which lost them;  not supported for all edges or for edges lost during node deletion
+
+    #for trial_num in range(max(20, 3*target_edges_to_add)):
+    added_edges = 0
+    removed_edges = 0
+    while added_edges < max(20, 3*target_edges_to_add):
+        if num_remaining_edges_to_add <= 0:  #we might overshoot, hence <= 0 not ==
+            break
+        if npr.rand() > edge_welfare_fraction or len(deprived_nodes) == 0:
+            head = random.choice(all_nodes)
+        else:
+            head = random.choice(deprived_nodes)
+        if G_degree(head) == 0 and tpl_data['chance_edge_prob'] == 0.0:
+            continue
+        tail = find_node_to_friend_hits(G=G, head=head, tpl_data=tpl_data, params=params, existing_nbs=G_neighbors(head))
+        if tail == None or tail == head or G.has_edge(head,tail):
+            continue
+        #sys.stdout.write('%d,%.3f'%(G_degree(head), nx.clustering(G, head)))
+        G.add_edge(head,tail)
+        if(planarity.is_planar(G.edges())):
+        #sys.stdout.write(',%.3f\n'%nx.clustering(G, head))
+            added_edges_set.add((head,tail))
+            num_remaining_edges_to_add -= 1
+            added_edges+=1
+        else:
+            G.remove_edge(head,tail)
+            removed_edges+=1
+            continue
+            #added_edges += 1
+            #print(head,tail)
+            #print('removed edge', removed_edges)
+
+    num_edges_added   = len(added_edges_set)
+    num_edges_deleted = len(deled_edges_set)
+    #print num_edges_added, num_edges_deleted, G.number_of_edges()
+    if num_edges_added > 20 and (num_edges_added-target_edges_to_add)/float(num_edges_added)> 0.2:
+        print_warning(params, 'Warning: Excessive number of edges were added. Is the graph treelike (low AvgDegree and connected)? AvgDegree=%.1f.'%np.average(list(nx.degree(G).values())))
+        #this might be caused by node edits.  in that case, try minorizing_node_deletion
+    if num_edges_added > 20 and (target_edges_to_add-num_edges_added)/float(num_edges_added)> 0.2:
+        print_warning(params, 'Warning: Excessive number of edges failed to add.   Consider setting locality_bias_correction to negative values.')
+        if nx.density(G) > 0.6:
+            print_warning(params, 'Is the graph too dense? Density=%.2f'%nx.density(G))
+    if num_edges_deleted > 20 and abs(target_edges_to_delete-num_edges_deleted)/float(num_edges_deleted)> 0.2:
+        print_warning(params, 'Warning: Excessive number of edges were deleted.')
+        if nx.density(G) > 0.6:
+            print_warning(params, 'Is the graph too dense? Density=%.2f'%nx.density(G))
+    if verbose:
+        print('\tadded edges: %d, deleted edges: %d'%(num_edges_added,num_edges_deleted))
+
+    if 'edit_edges_tester' in params:
+        params['edit_edges_tester'](G, added_edges_set, deled_edges_set, tpl_data)
+
+
+    return G
+
+def do_uncoarsen_planar(G_coarse, c_data, model_map, fine_model_map, params):
+    if isinstance(params.get('algorithm_for_uncoarsening', False), collections.Callable):
+        return params['algorithm_for_uncoarsening'](G_coarse, c_data, params)
+    print("generating planar network")
+    c_data_unedited= interpolate_non_edited_nodes_edges(G_coarse, c_data, model_map, fine_model_map, params)
+    clean_c_data(G_coarse, c_data_unedited)
+
+    aggregates    = c_data_unedited['aggregates']
+    trapped_edges = c_data_unedited['trapped_edges']
+    home_nodes    = c_data_unedited['home_nodes']
+    merged_edges  = c_data_unedited['merged_edges']
+
+    G_fine = nx.empty_graph()
+    G_fine.add_nodes_from(home_nodes)
+    removed_edges =0
+
+    for s1,s2 in G_coarse.edges_iter():
+        if (s1,s2) in merged_edges:
+            s1s2 = merged_edges[(s1,s2)]
+        else:
+            s1s2 = merged_edges[(s2,s1)]
+
+        for u,v in s1s2:
+            assert u in G_fine
+            assert v in G_fine
+            G_fine.add_edge(u,v)
+            if not planarity.is_planar(G_fine.edges()):
+                G_fine.remove_edge(u, v)
+                removed_edges += 1
+
+    for seed in trapped_edges:
+        for u,v in trapped_edges[seed]:
+             if u in G_fine and v in G_fine:
+                G_fine.add_edge(u,v)
+                if not planarity.is_planar(G_fine.edges()):
+                    G_fine.remove_edge(u, v)
+                    removed_edges += 1
+
+            #u or v must have been deleted
+    c_data_edted = interpolate_edited_edges(G_coarse, c_data, model_map, fine_model_map, params)
+    clean_c_data(G_coarse, c_data_edted)
+
+    aggregates = c_data_edted['aggregates']
+    trapped_edges = c_data_edted['trapped_edges']
+    home_nodes = c_data_edted['home_nodes']
+    merged_edges = c_data_edted['merged_edges']
+
+    removed_edges = 0
+
+
+    for s1, s2 in G_coarse.edges_iter():
+        if (s1, s2) in merged_edges:
+            s1s2 = merged_edges[(s1, s2)]
+        else:
+            s1s2 = merged_edges[(s2, s1)]
+
+        for u, v in s1s2:
+            assert u in G_fine
+            assert v in G_fine
+            G_fine.add_edge(u, v)
+            if not planarity.is_planar(G_fine.edges()):
+                G_fine.remove_edge(u, v)
+                removed_edges += 1
+
+
+    if 'do_uncoarsen_tester' in params:
+        params['do_uncoarsen_tester'](G_coarse, G_fine, c_data)
+
+
+    return G_fine
