@@ -31,14 +31,13 @@ graphviz is recommended for visualization.
 
 Usage example
 -------------
-python musketeer.py -f data-samples/arenas_email.edges -t edgelist -p "{'node_growth_rate':[0.005, 0.001], 'edge_edit_rate':[0.05, 0.04, 0.03], 'node_edit_rate':[0.07, 0.06, 0.05]}" -o output/test.dot
+python musketeer.py -f data-samples/arenas_email.edges -t -k true edgelist -p "{'node_growth_rate':[0.005, 0.001], 'edge_edit_rate':[0.05, 0.04, 0.03], }" -o output/test.dot
 
 explanation:
 1. Loads data-social/arenas_email.edges
 2. Increases the number of nodes by 0.9% at level 1 deep, and by 0.1% at level 0 (finest level)
 3. Edits 3% of the edges and 5% of the nodes at level 2 deep, 
    4% of edges at level 1 deep and 6% of the nodes,
-   5% of edges at level 0 deep and 7% of the nodes
 4. The graph is outputed to output/test.dot (DOT format used by graphviz)
 
 #note that step 2 changes the network statistics, and is often skipped in practice
@@ -64,6 +63,7 @@ Optional replication with one of several alternative generators (not MUSKETEER),
 For example, to use the Expected Degrees Model, use:
 -p "{'algorithm':alternatives.expected_degree_replicate}"
 
+-k "true" for generating planar graph {Default:False}
 
 'algorithm':algorithms.musketeer_snapshots:
 Parameter causes editing sequentially: G->R1->R2->...->Rn and return a sequence of snapshots.
